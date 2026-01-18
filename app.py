@@ -7,6 +7,7 @@ st.title("🏦 AI Insurance Support Assistant")
 # Initialize session state
 if "state" not in st.session_state:
     st.session_state["state"] = None
+    st.session_state["graph_completed"] = False
 
 if "conversation_history" not in st.session_state:
     st.session_state["conversation_history"] = ""
@@ -31,7 +32,7 @@ user_query = st.chat_input("Ask about your insurance...")
 def init_state(user_query: str):
     """Create fresh initial state for a new conversation"""
     return {
-        "n_iteraton": 0,
+        "n_iteration": 0,  # Fixed typo: was "n_iteraton"
         "messages": [],
         "user_input": user_query,
         "user_intent": "",
@@ -60,6 +61,7 @@ if user_query:
     if not st.session_state["awaiting_clarification"]:
         # Start fresh graph run
         st.session_state["state"] = init_state(user_query)
+        st.session_state["graph_completed"] = False
 
     else:
         # Case 2: This is the USER'S ANSWER to a clarification
@@ -73,9 +75,20 @@ if user_query:
         st.session_state["awaiting_clarification"] = False
         st.session_state["last_question"] = None
 
-    # Run the graph
-    state = app.invoke(st.session_state["state"])
-    st.session_state["state"] = state
+    # Run the graph ONLY if not already completed
+    if not st.session_state.get("graph_completed", False):
+        try:
+            state = app.invoke(st.session_state["state"])
+            st.session_state["state"] = state
+            
+            # Mark as completed to prevent re-invocation
+            st.session_state["graph_completed"] = True
+            
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
+            st.session_state["graph_completed"] = True
+
+    state = st.session_state["state"]
 
     # --- CASE A: Agent needs more info ---
     if state.get("needs_user_input"):
@@ -83,6 +96,7 @@ if user_query:
 
         st.session_state["awaiting_clarification"] = True
         st.session_state["last_question"] = question
+        st.session_state["graph_completed"] = False  # Allow next run
 
         # Show assistant question in chat
         st.session_state["chat_history"].append(("assistant", question))

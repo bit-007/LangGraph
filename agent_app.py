@@ -49,36 +49,33 @@ class GraphState(TypedDict):
 
 
 
+
+
 @trace_agent
 def supervisor_agent(state):
     print("---SUPERVISOR AGENT---")
-
+    
     # ---------------------------
-    # PHASE 1: Handle clarification return from Streamlit
+    # PHASE 1: Handle clarification return
     # ---------------------------
     if state.get("needs_clarification"):
         print("✅ Processing user clarification")
-
         user_clarification = state.get("user_clarification", "")
         clarification_question = state.get("clarification_question", "")
 
-        # Extract IDs from user answer
+        # Extract IDs
         policy_match = re.search(r'POL\d{6}', user_clarification)
         if policy_match:
             state["policy_number"] = policy_match.group()
-            print(f"📋 Extracted policy number: {state['policy_number']}")
 
         customer_match = re.search(r'CUST\d{5}', user_clarification)
         if customer_match:
             state["customer_id"] = customer_match.group()
-            print(f"👤 Extracted customer ID: {state['customer_id']}")
 
         claim_match = re.search(r'CLM\d{6}', user_clarification)
         if claim_match:
             state["claim_id"] = claim_match.group()
-            print(f"📄 Extracted claim ID: {state['claim_id']}")
 
-        # Update conversation history (THIS is where your updated_history logic lives)
         updated_conversation = (
             state.get("conversation_history", "")
             + f"\nAssistant: {clarification_question}\nUser: {user_clarification}"
@@ -86,13 +83,11 @@ def supervisor_agent(state):
 
         state["conversation_history"] = updated_conversation
         state["needs_clarification"] = False
-
-        # Clean up temporary fields
         state.pop("clarification_question", None)
         state.pop("user_clarification", None)
 
     # ---------------------------
-    # PHASE 2: Extract from history (safety net)
+    # PHASE 2: Extract from history
     # ---------------------------
     conversation_history = state.get("conversation_history", "")
 
@@ -100,19 +95,16 @@ def supervisor_agent(state):
         m = re.search(r'POL\d{6}', conversation_history)
         if m:
             state["policy_number"] = m.group()
-            print(f"📋 Extracted policy number from history: {state['policy_number']}")
 
     if not state.get("customer_id"):
         m = re.search(r'CUST\d{5}', conversation_history)
         if m:
             state["customer_id"] = m.group()
-            print(f"👤 Extracted customer ID from history: {state['customer_id']}")
 
     if not state.get("claim_id"):
         m = re.search(r'CLM\d{6}', conversation_history)
         if m:
             state["claim_id"] = m.group()
-            print(f"📄 Extracted claim ID from history: {state['claim_id']}")
 
     # ---------------------------
     # PHASE 3: Iteration guard
@@ -122,83 +114,118 @@ def supervisor_agent(state):
     print(f"🔢 Supervisor iteration: {n_iter}")
 
     if n_iter >= 5:
-        print("⚠️ Max iterations reached — escalating to human")
-        state["requires_human_escalation"] = True
-        state["next_agent"] = "human_escalation_agent"
-        return state
-
-    # ---------------------------
-    # PHASE 4: If specialist previously asked for POLICY NUMBER → ask user ONCE
-    # ---------------------------
-    history_lower = conversation_history.lower()
-
-    if any(phrase in history_lower for phrase in [
-        "please provide your policy number",
-        "provide your policy number",
-        "could you provide your policy number"
-    ]) and not state.get("policy_number"):
-
-        print("🚨 Need policy number → asking user")
-
-        ask = ask_user("What is your policy number?", "policy number")
-
+        print("⚠️ Max iterations → escalating to human")
+        # ⚠️ CRITICAL: RETURN immediately with escalation routing
         return {
-            "needs_user_input": True,
-            "question": ask["question"],
-            "missing_info": ask.get("missing_info", ""),
+            "requires_human_escalation": True,
+            "next_agent": "human_escalation_agent",
+            "task": "Escalate to human support",
+            "justification": "Maximum iterations reached without resolution",
             "conversation_history": conversation_history,
-            "n_iteration": n_iter,
-            "policy_number": state.get("policy_number", ""),
-            "customer_id": state.get("customer_id", "")
+            "n_iteration": n_iter
         }
 
     # ---------------------------
-    # PHASE 5: If specialist asked for CLAIM ID → ask user ONCE
+    # PHASE 4: Check for specialist asking for policy number
     # ---------------------------
-    if any(phrase in history_lower for phrase in [
+    history_lower = conversation_history.lower()
+    
+    # Look at the last specialist message
+    last_specialist_msg = ""
+    for marker in ["Billing Agent:", "Policy Agent:", "Claims Agent:", "General Help Agent:"]:
+        if marker in conversation_history:
+            parts = conversation_history.split(marker)
+            if len(parts) > 1:
+                last_specialist_msg = parts[-1].split("\n")[0].strip().lower()
+                print(f"📝 Last specialist message: {last_specialist_msg[:100]}...")
+                break
+    
+    # If specialist is asking for policy number
+    if last_specialist_msg and any(phrase in last_specialist_msg for phrase in [
+        "please provide your policy number",
+        "provide your policy number",
+        "could you provide your policy number",
+        "please provide me with your policy number"
+    ]):
+        print("🚨 Detected: Specialist asking for policy number")
+        
+        # If we don't have it, ask the user
+        if not state.get("policy_number"):
+            return {
+                "needs_user_input": True,
+                "question": "What is your policy number?",
+                "missing_info": "policy number",
+                "conversation_history": conversation_history,
+                "n_iteration": n_iter,
+                "policy_number": state.get("policy_number", ""),
+                "customer_id": state.get("customer_id", "")
+            }
+
+    # ---------------------------
+    # PHASE 5: Check for specialist asking for claim ID
+    # ---------------------------
+    if last_specialist_msg and any(phrase in last_specialist_msg for phrase in [
         "please provide your claim id",
         "provide your claim id",
         "could you provide your claim id"
-    ]) and not state.get("claim_id"):
-
-        print("🚨 Need claim ID → asking user")
-
-        ask = ask_user("What is your claim ID?", "claim ID")
-
-        return {
-            "needs_user_input": True,
-            "question": ask["question"],
-            "missing_info": ask.get("missing_info", ""),
-            "conversation_history": conversation_history,
-            "n_iteration": n_iter,
-            "policy_number": state.get("policy_number", ""),
-            "customer_id": state.get("customer_id", ""),
-            "claim_id": state.get("claim_id", "")
-        }
+    ]):
+        print("🚨 Detected: Specialist asking for claim ID")
+        
+        if not state.get("claim_id"):
+            return {
+                "needs_user_input": True,
+                "question": "What is your claim ID?",
+                "missing_info": "claim ID",
+                "conversation_history": conversation_history,
+                "n_iteration": n_iter,
+                "policy_number": state.get("policy_number", ""),
+                "customer_id": state.get("customer_id", ""),
+                "claim_id": state.get("claim_id", "")
+            }
 
     # ---------------------------
-    # PHASE 6: If we already HAVE a policy number → route directly
+    # PHASE 6: Check if question is already answered
+    # ---------------------------
+    if last_specialist_msg and len(last_specialist_msg) > 0:
+        # Check if response has actual information
+        if any(indicator in last_specialist_msg for indicator in [
+            "$", "premium", "coverage", "deductible", "claim status",
+            "approved", "denied", "pending", "amount", "balance"
+        ]) and not any(phrase in last_specialist_msg for phrase in [
+            "please provide", "could you provide", "can you provide",
+            "unable to retrieve", "couldn't find", "couldn't retrieve"
+        ]):
+            print("✅ Question appears to be answered → routing to final_answer_agent")
+            return {
+                "next_agent": "final_answer_agent",
+                "task": "Finalize response",
+                "justification": "Specialist provided answer",
+                "conversation_history": conversation_history,
+                "n_iteration": n_iter,
+                "end_conversation": True,
+                "policy_number": state.get("policy_number", ""),
+                "customer_id": state.get("customer_id", "")
+            }
+
+    # ---------------------------
+    # PHASE 7: If we have policy number, route directly
     # ---------------------------
     if state.get("policy_number"):
-        print("✅ Have policy number → routing to billing_agent")
-
-        updated_conversation = conversation_history + \
-            f"\nAssistant: Routing to billing_agent with policy: {state['policy_number']}"
-
+        print(f"✅ Have policy number: {state['policy_number']} → routing to billing_agent")
         return {
             "next_agent": "billing_agent",
-            "task": "Retrieve premium information for the user's auto insurance policy",
-            "justification": "User has provided policy number",
-            "conversation_history": updated_conversation,
+            "task": "Retrieve premium information",
+            "justification": "Policy number available",
+            "conversation_history": conversation_history,
             "n_iteration": n_iter,
-            "policy_number": state.get("policy_number", ""),
+            "policy_number": state["policy_number"],
             "customer_id": state.get("customer_id", "")
         }
 
     # ---------------------------
-    # PHASE 7: Otherwise → let LLM decide routing
+    # PHASE 8: Let LLM decide routing
     # ---------------------------
-    print("🤖 Calling LLM for routing decision...")
+    print("🤖 Calling LLM for initial routing...")
 
     prompt = SUPERVISOR_PROMPT.format(
         conversation_history=f"Full Conversation:\n{conversation_history}"
@@ -236,24 +263,24 @@ def supervisor_agent(state):
         for tc in message.tool_calls:
             if tc.function.name == "ask_user":
                 args = json.loads(tc.function.arguments)
-                ask = ask_user(args["question"], args["missing_info"])
-
                 return {
                     "needs_user_input": True,
-                    "question": ask["question"],
-                    "missing_info": ask.get("missing_info", ""),
+                    "question": args["question"],
+                    "missing_info": args.get("missing_info", ""),
                     "conversation_history": conversation_history,
                     "n_iteration": n_iter,
                     "policy_number": state.get("policy_number", ""),
                     "customer_id": state.get("customer_id", "")
                 }
 
-    # Otherwise parse routing decision
+    # Parse routing decision
     try:
         parsed = json.loads(message.content)
     except:
         parsed = {}
 
+    print(f"➡️ Routing to: {parsed.get('next_agent', 'general_help_agent')}")
+    
     return {
         "next_agent": parsed.get("next_agent", "general_help_agent"),
         "task": parsed.get("task", "Assist the user with their query."),
@@ -289,8 +316,27 @@ def claims_agent_node(state):
     result = run_llm(prompt, tools, {"get_claim_status": get_claim_status})
     
     logger.info("✅ Claims agent completed")
-    return {"messages": [("assistant", result)]}
-
+    
+    # Update state with results
+    updated_state = {"messages": [("assistant", result)]}
+    
+    # Preserve IDs
+    if state.get("policy_number"):
+        updated_state["policy_number"] = state["policy_number"]
+    if state.get("customer_id"):
+        updated_state["customer_id"] = state["customer_id"]
+    if state.get("claim_id"):
+        updated_state["claim_id"] = state["claim_id"]
+    
+    # Update conversation history
+    current_history = state.get("conversation_history", "")
+    updated_state["conversation_history"] = current_history + f"\nClaims Agent: {result}"
+    
+    # ⚠️ CRITICAL FIX: Signal completion
+    updated_state["end_conversation"] = True
+    updated_state["next_agent"] = "final_answer_agent"
+    
+    return updated_state
 @trace_agent
 def final_answer_agent(state):
     """Generate a clean final summary before ending the conversation"""
@@ -311,7 +357,6 @@ def final_answer_agent(state):
     specialist_response = recent_responses[0] if recent_responses else "No response available"
     
     prompt = FINAL_ANSWER_PROMPT.format(
-
         specialist_response=specialist_response,  
         user_query=user_query,
     )
@@ -371,7 +416,25 @@ def policy_agent_node(state):
     })
     
     print("✅ Policy agent completed")
-    return {"messages": [("assistant", result)]}
+    
+    # Update state with results
+    updated_state = {"messages": [("assistant", result)]}
+    
+    # Preserve IDs
+    if state.get("policy_number"):
+        updated_state["policy_number"] = state["policy_number"]
+    if state.get("customer_id"):
+        updated_state["customer_id"] = state["customer_id"]
+    
+    # Update conversation history
+    current_history = state.get("conversation_history", "")
+    updated_state["conversation_history"] = current_history + f"\nPolicy Agent: {result}"
+    
+    # ⚠️ CRITICAL FIX: Signal completion
+    updated_state["end_conversation"] = True
+    updated_state["next_agent"] = "final_answer_agent"
+    
+    return updated_state
 
 @trace_agent
 def billing_agent_node(state):
@@ -379,7 +442,6 @@ def billing_agent_node(state):
     print("TASK: ", state.get("task"))
     print("USER QUERY: ", state.get("user_input"))
     print("CONVERSATION HISTORY: ", state.get("conversation_history", ""))
-    
     
     prompt = BILLING_AGENT_PROMPT.format(
         task=state.get("task"),
@@ -419,10 +481,10 @@ def billing_agent_node(state):
     # Update conversation history
     current_history = state.get("conversation_history", "")
     updated_state["conversation_history"] = current_history + f"\nBilling Agent: {result}"
-    updated_state["end_conversation"] = True   # <-- CRITICAL FIX
+    
+    # ⚠️ CRITICAL FIX: Signal that conversation should end
+    updated_state["end_conversation"] = True
     updated_state["next_agent"] = "final_answer_agent"
-
-
     
     return updated_state
 
@@ -467,16 +529,19 @@ def general_help_agent_node(state):
     print("🤖 Calling LLM for general response...")
     final_answer = run_llm(prompt)
 
-    
-    
     print("✅ General help agent completed")
+    
     updated_state = {
-                        "messages": [("assistant", final_answer)],
-                        "retrieved_faqs": results.get("metadatas", []),
-                    }
+        "messages": [("assistant", final_answer)],
+        "retrieved_faqs": results.get("metadatas", []),
+    }
 
-
+    # Update conversation history
     updated_state["conversation_history"] = conversation_history + f"\nGeneral Help Agent: {final_answer}"
+    
+    # ⚠️ CRITICAL FIX: Signal completion
+    updated_state["end_conversation"] = True
+    updated_state["next_agent"] = "final_answer_agent"
 
     return updated_state
 
@@ -487,17 +552,14 @@ def human_escalation_node(state):
     
     prompt = HUMAN_ESCALATION_PROMPT.format(
         task=state.get("task"),
-        #user_query=state.get("user_input"),
         conversation_history=state.get("conversation_history", "")
     )
 
     print("🤖 Generating escalation response...")
     response = client.chat.completions.create(
-    model="gpt-4o-mini",   # ✅ VALID MODEL
-    messages=[{"role": "system", "content": prompt}]
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": prompt}]
     )
-
-
 
     print("🚨 Conversation escalated to human")
     return {
@@ -509,16 +571,32 @@ def human_escalation_node(state):
 
 
 def decide_next_agent(state):
-    # 1) If we need to ask the user → loop back to supervisor
-    if state.get("needs_user_input"):
-        return "supervisor_agent"
-
-    # 2) If billing or any agent marked the conversation done → go to final_answer_agent
+    """Determine the next agent based on state"""
+    
+    # Priority 1: Check for human escalation
+    if state.get("requires_human_escalation"):
+        print("🚨 Routing to human_escalation_agent")
+        return "human_escalation_agent"
+    
+    # Priority 2: Check if conversation should end
     if state.get("end_conversation"):
+        print("✅ Routing to final_answer_agent")
         return "final_answer_agent"
-
-    # 3) Otherwise follow next_agent
-    return state.get("next_agent", "supervisor_agent")
+    
+    # Priority 3: Check if we need user input
+    if state.get("needs_user_input"):
+        print("⏸️ Pausing for user input")
+        return "supervisor_agent"
+    
+    # Priority 4: Check if we need clarification
+    if state.get("needs_clarification"):
+        print("❓ Processing clarification")
+        return "supervisor_agent"
+    
+    # Priority 5: Follow next_agent directive
+    next_agent = state.get("next_agent", "general_help_agent")
+    print(f"➡️ Routing to: {next_agent}")
+    return next_agent
 
 
 
